@@ -92,37 +92,37 @@ impl<'a> Parser<'a> {
 
     fn parse(&mut self) -> Result<RedisObject, ()> {
         match Self::parse_object(self.stream) {
-            Ok(Some((object, _)))  => Ok(object),
-            Ok(None) => Err(()),
+            Ok((Some(object), _))  => Ok(object),
+            Ok(_) => Err(()),
             Err(_) => Err(())
         }
     }
 
-    fn parse_object(stream: &[u8]) -> Result<Option<(RedisObject, usize)>, ()> {
+    fn parse_object(stream: &[u8]) -> Result<(Option<RedisObject>, usize), ()> {
         if stream[0..2] == *b"\r\n" {
             println!("bad stream {:?}", stream);
-            return Ok(None);
+            return Ok((None, 2));
         }
         match DataType::from_byte(stream[0]) {
             DataType::Array => Parser::parse_array(&stream[1..]),
             DataType::SimpleString => {
                 let parts = split_by_line(&stream[1..]);
-                Ok(Some((
-                    RedisObject::SimpleString(String::from_utf8(parts[0].clone()).unwrap()),
+                Ok((Some(
+                    RedisObject::SimpleString(String::from_utf8(parts[0].clone()).unwrap())),
                     parts[0].len(),
-                )))
+                ))
             }
             DataType::Integer => {
                 let parts = split_by_line(&stream[1..]);
-                Ok(Some((
+                Ok((Some(
                     RedisObject::Integer(
                         String::from_utf8(parts[0].clone())
                             .unwrap()
                             .parse::<i32>()
                             .unwrap(),
-                    ),
+                    )),
                     parts[0].len(),
-                )))
+                ))
             }
             DataType::BulkString => {
                 let parts = split_by_line(&stream[1..]);
@@ -134,16 +134,16 @@ impl<'a> Parser<'a> {
                 };
                 let string = String::from_utf8(parts[1].clone()).unwrap();
                 assert!(string.len() == size as usize);
-                Ok(Some((
-                    RedisObject::BulkString(size, string),
+                Ok((Some(
+                    RedisObject::BulkString(size, string)),
                     parts[0].len() + parts[1].len() + 3,
-                )))
+                ))
             }
             _ => unimplemented!("type not implemented"),
         }
     }
 
-    fn parse_array(stream: &[u8]) -> Result<Option<(RedisObject, usize)>, ()> {
+    fn parse_array(stream: &[u8]) -> Result<(Option<RedisObject>, usize), ()> {
         println!("arr: {:?}", stream);
         let parts = split_by_line(stream);
         let size = String::from_utf8(parts[0].clone())
@@ -157,7 +157,7 @@ impl<'a> Parser<'a> {
             println!("pos: {}", pos);
             println!("stream.len(): {}", stream.len());
             match Parser::parse_object(&stream[pos..]) {
-                Ok(Some((object, consumed))) => {
+                Ok((Some(object), consumed)) => {
                     println!("object ok: {:?}", object);
                     objects.push(object);
                     pos += consumed;
@@ -166,13 +166,20 @@ impl<'a> Parser<'a> {
                         break;
                     }
                 }
-                Ok(None) => { break; }
+                Ok((None, consumed)) => {
+                    pos += consumed;
+                    if pos > stream.len() {
+                        println!("here?, {}, {}, {}", pos, stream.len(), consumed);
+                        break;
+                    }
+
+                }
                 Err(_) => {
                     return Err(());
                 }
             }
         }
-        Ok(Some((RedisObject::Array(objects), pos)))
+        Ok((Some(RedisObject::Array(objects)), pos))
     }
 }
 
