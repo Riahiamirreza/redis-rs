@@ -22,6 +22,11 @@ fn main() {
 
 fn handle(mut s: TcpStream) {
     let mut buf = [0u8; 1024];
-    let _ = s.read(&mut buf).expect("Could not read from client");
-    s.write_all(b"+PONG\r\n");
+    loop {
+        let read_count = s.read(&mut buf).expect("Could not read from client");
+        if read_count == 0 {
+            return;
+        }
+        s.write_all(b"+PONG\r\n");
+    }
 }
