@@ -35,7 +35,8 @@ fn handle(mut stream: TcpStream) {
                 stream.write_all(b"+PONG\r\n");
             }
             Ok(Command::Echo(s)) => {
-                stream.write_all(s.as_bytes());
+                let out = [b"$", format!("{}", s.len()).as_bytes() , b"\r\n" , s.as_bytes() , b"\r\n"].concat();
+                stream.write_all(out.as_slice());
             }
             Err(_) => {
                 stream.write_all(b"+PONG\r\n");
@@ -82,40 +83,40 @@ enum RedisObject {
 
 struct Parser<'a> {
     stream: &'a [u8],
-    pos: usize,
 }
 
 impl<'a> Parser<'a> {
     fn new(stream: &'a [u8]) -> Self {
-        Self { stream, pos: 0 }
+        Self { stream }
     }
 
     fn parse(&mut self) -> Result<RedisObject, ()> {
         match Self::parse_object(self.stream) {
-            Ok((Some(object), _))  => Ok(object),
+            Ok((Some(object), _)) => Ok(object),
             Ok(_) => Err(()),
-            Err(_) => Err(())
+            Err(_) => Err(()),
         }
     }
 
     fn parse_object(stream: &[u8]) -> Result<(Option<RedisObject>, usize), ()> {
         if stream[0..2] == *b"\r\n" {
-            println!("bad stream {:?}", stream);
             return Ok((None, 2));
         }
         match DataType::from_byte(stream[0]) {
             DataType::Array => Parser::parse_array(&stream[1..]),
             DataType::SimpleString => {
                 let parts = split_by_line(&stream[1..]);
-                Ok((Some(
-                    RedisObject::SimpleString(String::from_utf8(parts[0].clone()).unwrap())),
+                Ok((
+                    Some(RedisObject::SimpleString(
+                        String::from_utf8(parts[0].clone()).unwrap(),
+                    )),
                     parts[0].len(),
                 ))
             }
             DataType::Integer => {
                 let parts = split_by_line(&stream[1..]);
-                Ok((Some(
-                    RedisObject::Integer(
+                Ok((
+                    Some(RedisObject::Integer(
                         String::from_utf8(parts[0].clone())
                             .unwrap()
                             .parse::<i32>()
@@ -134,8 +135,8 @@ impl<'a> Parser<'a> {
                 };
                 let string = String::from_utf8(parts[1].clone()).unwrap();
                 assert!(string.len() == size as usize);
-                Ok((Some(
-                    RedisObject::BulkString(size, string)),
+                Ok((
+                    Some(RedisObject::BulkString(size, string)),
                     parts[0].len() + parts[1].len() + 3,
                 ))
             }
@@ -153,9 +154,6 @@ impl<'a> Parser<'a> {
         let mut objects = vec![];
         let mut pos: usize = parts[0].len() + 2;
         loop {
-            println!("objs: {:?}", objects);
-            println!("pos: {}", pos);
-            println!("stream.len(): {}", stream.len());
             match Parser::parse_object(&stream[pos..]) {
                 Ok((Some(object), consumed)) => {
                     println!("object ok: {:?}", object);
@@ -168,17 +166,17 @@ impl<'a> Parser<'a> {
                 }
                 Ok((None, consumed)) => {
                     pos += consumed;
-                    if pos > stream.len() {
+                    if pos >= stream.len() {
                         println!("here?, {}, {}, {}", pos, stream.len(), consumed);
                         break;
                     }
-
                 }
                 Err(_) => {
                     return Err(());
                 }
             }
         }
+        println!("{objects:?}");
         Ok((Some(RedisObject::Array(objects)), pos))
     }
 }
@@ -208,35 +206,29 @@ impl Command {
     fn from_buffer(buf: &[u8]) -> Result<Self, ()> {
         let mut p = Parser::new(buf);
         let mut q = Parser::new(buf);
-        println!("{:?}", q.parse());
+        println!("parsed resp: {:?}", q.parse());
         match p.parse() {
-            Ok(object) => {
-                match object {
-                    RedisObject::Array(arr) => {
-                        match arr.as_slice() {
-                            [RedisObject::BulkString(4, s)] => {
-                                if s.to_uppercase() == "PING".to_string() {
-                                    Ok(Command::Ping)
-                                } else {
-                                    Err(())
-                                }
-                            }
-                            [RedisObject::BulkString(4, s), RedisObject::BulkString(_, o)] => {
-                                if s.to_uppercase() == "ECHO".to_string() {
-                                    Ok(Command::Echo(o.to_string()))
-                                } else {
-                                    Err(())
-                                }
-                            }
-                            _ => Err(())
+            Ok(object) => match object {
+                RedisObject::Array(arr) => match arr.as_slice() {
+                    [RedisObject::BulkString(4, s)] => {
+                        if s.to_uppercase() == "PING".to_string() {
+                            Ok(Command::Ping)
+                        } else {
+                            Err(())
                         }
                     }
-                    _ => Err(())
-                }
+                    [RedisObject::BulkString(4, s), RedisObject::BulkString(_, o)] => {
+                        if s.to_uppercase() == "ECHO".to_string() {
+                            Ok(Command::Echo(o.to_string()))
+                        } else {
+                            Err(())
+                        }
+                    }
+                    _ => Err(()),
+                },
+                _ => Err(()),
             },
-            Err(_) => {
-                Err(())
-            }
+            Err(_) => Err(()),
         }
     }
 }
