@@ -1,15 +1,22 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::thread;
+use std::{
+    sync::{Arc, Mutex},
+    thread,
+    collections,
+};
 
 fn main() {
 
     let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
 
+    let data_storage = Arc::new(Mutex::new(collections::HashMap::<String, Vec<u8>>::new()));
+
     for stream in listener.incoming() {
         match stream {
             Ok(s) => {
-                thread::spawn(move || handle(s));
+                let cloned_storage = data_storage.clone();
+                thread::spawn(move || handle(s, cloned_storage));
             }
             Err(e) => {
                 println!("error: {}", e);
@@ -18,7 +25,7 @@ fn main() {
     }
 }
 
-fn handle(mut stream: TcpStream) {
+fn handle(mut stream: TcpStream, storage: Arc<Mutex<collections::HashMap<String, Vec<u8>>>>) {
     let mut buf = [0u8; 64];
     loop {
         let read_count = stream.read(&mut buf).expect("Could not read from client");
@@ -34,8 +41,26 @@ fn handle(mut stream: TcpStream) {
                 stream.write_all(b"+PONG\r\n");
             }
             Ok(Command::Echo(s)) => {
-                let out = [b"$", format!("{}", s.len()).as_bytes() , b"\r\n" , s.as_bytes() , b"\r\n"].concat();
+                let out = serialize_to_bulk_string(s.as_bytes());
                 stream.write_all(out.as_slice());
+            }
+            Ok(Command::Set(key, value)) => {
+                let mut storage = storage.lock().unwrap();
+                storage.insert(key, value);
+                let out = serialize_to_simple_string("OK".as_bytes());
+                stream.write_all(out.as_slice());
+            }
+            Ok(Command::Get(key)) => {
+                let mut storage = storage.lock().unwrap();
+                match storage.get(&key) {
+                    Some(v) => {
+                        let out = serialize_to_bulk_string(v);
+                        stream.write_all(out.as_slice());
+                    },
+                    None => {
+                        stream.write_all(b"$-1\r\n");
+                    }
+                }
             }
             Err(_) => {
                 stream.write_all(b"+PONG\r\n");
@@ -44,10 +69,20 @@ fn handle(mut stream: TcpStream) {
     }
 }
 
+fn serialize_to_simple_string(s: &[u8]) -> Vec<u8> {
+    [b"+", s, b"\r\n"].concat()
+}
+
+fn serialize_to_bulk_string(s: &[u8]) -> Vec<u8> {
+    [b"$", format!("{}", s.len()).as_bytes() , b"\r\n" , s, b"\r\n"].concat()
+}
+
 #[derive(Debug)]
 enum Command {
     Ping,
     Echo(String),
+    Set(String, Vec<u8>),
+    Get(String),
 }
 
 enum DataType {
@@ -217,6 +252,20 @@ impl Command {
                     [RedisObject::BulkString(4, s), RedisObject::BulkString(_, o)] => {
                         if s.to_uppercase() == "ECHO".to_string() {
                             Ok(Command::Echo(o.to_string()))
+                        } else {
+                            Err(())
+                        }
+                    }
+                    [RedisObject::BulkString(3, s), RedisObject::BulkString(_, key)] => {
+                        if s.to_uppercase() == "GET".to_string() {
+                            Ok(Command::Get(key.to_string()))
+                        } else {
+                            Err(())
+                        }
+                    }
+                    [RedisObject::BulkString(3, s), RedisObject::BulkString(_, key), RedisObject::BulkString(_, value)] => {
+                        if s.to_uppercase() == "SET".to_string() {
+                            Ok(Command::Set(key.to_string(), value.as_bytes().to_vec()))
                         } else {
                             Err(())
                         }
