@@ -1,16 +1,18 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::{
-    sync::{Arc, Mutex},
-    thread,
     collections,
+    sync::{Arc, Mutex},
+    thread, time,
 };
 
 fn main() {
-
     let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
 
-    let data_storage = Arc::new(Mutex::new(collections::HashMap::<String, Vec<u8>>::new()));
+    let data_storage = Arc::new(Mutex::new(collections::HashMap::<
+        String,
+        (Option<time::Instant>, Vec<u8>),
+    >::new()));
 
     for stream in listener.incoming() {
         match stream {
@@ -25,7 +27,10 @@ fn main() {
     }
 }
 
-fn handle(mut stream: TcpStream, storage: Arc<Mutex<collections::HashMap<String, Vec<u8>>>>) {
+fn handle(
+    mut stream: TcpStream,
+    storage: Arc<Mutex<collections::HashMap<String, (Option<time::Instant>, Vec<u8>)>>>,
+) {
     let mut buf = [0u8; 64];
     loop {
         let read_count = stream.read(&mut buf).expect("Could not read from client");
@@ -44,19 +49,30 @@ fn handle(mut stream: TcpStream, storage: Arc<Mutex<collections::HashMap<String,
                 let out = serialize_to_bulk_string(s.as_bytes());
                 stream.write_all(out.as_slice());
             }
-            Ok(Command::Set(key, value)) => {
+            Ok(Command::Set(key, value, expiry)) => {
                 let mut storage = storage.lock().unwrap();
-                storage.insert(key, value);
+                let expiry =
+                    expiry.map(|t| time::Instant::now() + time::Duration::from_millis(t as u64));
+                storage.insert(key, (expiry, value));
                 let out = serialize_to_simple_string("OK".as_bytes());
                 stream.write_all(out.as_slice());
             }
             Ok(Command::Get(key)) => {
                 let mut storage = storage.lock().unwrap();
                 match storage.get(&key) {
-                    Some(v) => {
-                        let out = serialize_to_bulk_string(v);
-                        stream.write_all(out.as_slice());
-                    },
+                    Some((expiry, v)) => {
+                        if let Some(expiry) = expiry {
+                            if time::Instant::now() >= *expiry {
+                                stream.write_all(b"$-1\r\n");
+                            } else {
+                                let out = serialize_to_bulk_string(v);
+                                stream.write_all(out.as_slice());
+                            }
+                        } else {
+                            let out = serialize_to_bulk_string(v);
+                            stream.write_all(out.as_slice());
+                        }
+                    }
                     None => {
                         stream.write_all(b"$-1\r\n");
                     }
@@ -74,14 +90,14 @@ fn serialize_to_simple_string(s: &[u8]) -> Vec<u8> {
 }
 
 fn serialize_to_bulk_string(s: &[u8]) -> Vec<u8> {
-    [b"$", format!("{}", s.len()).as_bytes() , b"\r\n" , s, b"\r\n"].concat()
+    [b"$", format!("{}", s.len()).as_bytes(), b"\r\n", s, b"\r\n"].concat()
 }
 
 #[derive(Debug)]
 enum Command {
     Ping,
     Echo(String),
-    Set(String, Vec<u8>),
+    Set(String, Vec<u8>, Option<u64>),
     Get(String),
 }
 
@@ -101,7 +117,7 @@ impl DataType {
             b':' => Self::Integer,
             b'$' => Self::BulkString,
             b'*' => Self::Array,
-            x => unimplemented!("hello {}", x),
+            _ => unimplemented!(),
         }
     }
 }
@@ -180,7 +196,7 @@ impl<'a> Parser<'a> {
 
     fn parse_array(stream: &[u8]) -> Result<(Option<RedisObject>, usize), ()> {
         let parts = split_by_line(stream);
-        let size = String::from_utf8(parts[0].clone())
+        let _size = String::from_utf8(parts[0].clone())
             .expect("invalid string")
             .parse::<usize>()
             .expect("invalid string");
@@ -238,7 +254,6 @@ fn split_by_line(stream: &[u8]) -> Vec<Vec<u8>> {
 impl Command {
     fn from_buffer(buf: &[u8]) -> Result<Self, ()> {
         let mut p = Parser::new(buf);
-        let mut q = Parser::new(buf);
         match p.parse() {
             Ok(object) => match object {
                 RedisObject::Array(arr) => match arr.as_slice() {
@@ -263,9 +278,27 @@ impl Command {
                             Err(())
                         }
                     }
+                    [RedisObject::BulkString(3, s), RedisObject::BulkString(_, key), RedisObject::BulkString(_, value), RedisObject::BulkString(2, ex), RedisObject::BulkString(_, duration)] => {
+                        if s.to_uppercase() == "SET".to_string()
+                            && ex.to_uppercase() == "PX"
+                            && duration.parse::<u64>().is_ok()
+                        {
+                            Ok(Command::Set(
+                                key.to_string(),
+                                value.as_bytes().to_vec(),
+                                Some(duration.parse::<u64>().unwrap()),
+                            ))
+                        } else {
+                            Err(())
+                        }
+                    }
                     [RedisObject::BulkString(3, s), RedisObject::BulkString(_, key), RedisObject::BulkString(_, value)] => {
                         if s.to_uppercase() == "SET".to_string() {
-                            Ok(Command::Set(key.to_string(), value.as_bytes().to_vec()))
+                            Ok(Command::Set(
+                                key.to_string(),
+                                value.as_bytes().to_vec(),
+                                None,
+                            ))
                         } else {
                             Err(())
                         }
