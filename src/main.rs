@@ -3,7 +3,6 @@ use std::net::{TcpListener, TcpStream};
 use std::thread;
 
 fn main() {
-    println!("Logs from your program will appear here!");
 
     let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
 
@@ -145,7 +144,6 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_array(stream: &[u8]) -> Result<(Option<RedisObject>, usize), ()> {
-        println!("arr: {:?}", stream);
         let parts = split_by_line(stream);
         let size = String::from_utf8(parts[0].clone())
             .expect("invalid string")
@@ -206,7 +204,6 @@ impl Command {
     fn from_buffer(buf: &[u8]) -> Result<Self, ()> {
         let mut p = Parser::new(buf);
         let mut q = Parser::new(buf);
-        println!("parsed resp: {:?}", q.parse());
         match p.parse() {
             Ok(object) => match object {
                 RedisObject::Array(arr) => match arr.as_slice() {
