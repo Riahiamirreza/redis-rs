@@ -79,7 +79,7 @@ fn handle(
                 }
             }
             Err(_) => {
-                stream.write_all(b"+PONG\r\n");
+                stream.write_all(b"-Error\r\n");
             }
         }
     }
@@ -205,18 +205,15 @@ impl<'a> Parser<'a> {
         loop {
             match Parser::parse_object(&stream[pos..]) {
                 Ok((Some(object), consumed)) => {
-                    println!("object ok: {:?}", object);
                     objects.push(object);
                     pos += consumed;
                     if pos > stream.len() {
-                        println!("here?, {}, {}, {}", pos, stream.len(), consumed);
                         break;
                     }
                 }
                 Ok((None, consumed)) => {
                     pos += consumed;
                     if pos >= stream.len() {
-                        println!("here?, {}, {}, {}", pos, stream.len(), consumed);
                         break;
                     }
                 }
