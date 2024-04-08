@@ -1,5 +1,9 @@
 use std::{
-    collections::{self, HashMap}, io::{Read, Write}, net::{TcpListener, TcpStream}, sync::{Arc, Mutex}, thread, time
+    collections::{self, HashMap},
+    io::{Read, Write},
+    net::{TcpListener, TcpStream},
+    sync::{Arc, Mutex},
+    thread, time,
 };
 
 use clap::Parser;
@@ -9,7 +13,7 @@ struct Args {
     #[arg(long)]
     dir: Option<String>,
     #[arg(long("dbfilename"))]
-    db_filename: Option<String>
+    db_filename: Option<String>,
 }
 
 fn init_config(conf: &mut Config) {
@@ -20,7 +24,7 @@ fn init_config(conf: &mut Config) {
 
 struct State {
     config: Mutex<Config>,
-    storage: Mutex<HashMap<String, (Option<time::Instant>, Vec<u8>)>>
+    storage: Mutex<HashMap<String, (Option<time::Instant>, Vec<u8>)>>,
 }
 
 fn main() {
@@ -28,13 +32,11 @@ fn main() {
     let mut config = Config::new();
     init_config(&mut config);
 
-    let data_storage = collections::HashMap::<
-        String,
-        (Option<time::Instant>, Vec<u8>),
-    >::new();
+    let data_storage = collections::HashMap::<String, (Option<time::Instant>, Vec<u8>)>::new();
 
     let state = Arc::new(State {
-        config: Mutex::new(config), storage: Mutex::new(data_storage)
+        config: Mutex::new(config),
+        storage: Mutex::new(data_storage),
     });
 
     for stream in listener.incoming() {
@@ -50,10 +52,7 @@ fn main() {
     }
 }
 
-fn handle(
-    mut stream: TcpStream,
-    state: Arc<State>
-) {
+fn handle(mut stream: TcpStream, state: Arc<State>) {
     let mut buf = [0u8; 1024];
     loop {
         let read_count = stream.read(&mut buf).expect("Could not read from client");
@@ -104,41 +103,33 @@ fn handle(
             Ok(Command::ConfigGet(key)) => {
                 if !["dir", "dbfilename"].contains(&key.as_str()) {
                     stream.write_all(b"-Error\r\n");
-
                 } else {
                     let config = state.config.lock().unwrap();
                     match key.as_str() {
-                       "dir"  => {
-                        match config.dir.clone() {
+                        "dir" => match config.dir.clone() {
                             Some(dir) => {
                                 let out = serialize_to_array(&["dir".as_bytes(), dir.as_bytes()]);
-                                // println!("{out:?}");
                                 stream.write_all(out.as_slice());
                             }
                             None => {
                                 stream.write_all(b"-Error\r\n");
                             }
-                        }
-                       }
-                       "dbfilename" => {
-                        match config.db_filename.clone() {
+                        },
+                        "dbfilename" => match config.db_filename.clone() {
                             Some(db_filename) => {
-                                let out = serialize_to_array(&["dbfilename".as_bytes(), db_filename.as_bytes()]);
-                                // let mut p = RESPParser::new(&out);
-                                // println!("{:?}", p.parse());
+                                let out = serialize_to_array(&[
+                                    "dbfilename".as_bytes(),
+                                    db_filename.as_bytes(),
+                                ]);
                                 stream.write_all(out.as_slice());
                             }
-                            None => {
-
-                            }
+                            None => {}
+                        },
+                        _ => {
+                            stream.write_all(b"-Error\r\n");
                         }
-                       }
-                       _ => {
-                        stream.write_all(b"-Error\r\n");
-                       }
                     }
                 }
-
             }
             Err(_) => {
                 stream.write_all(b"-Error\r\n");
@@ -148,7 +139,18 @@ fn handle(
 }
 
 fn serialize_to_array(strings: &[&[u8]]) -> Vec<u8> {
-    [b"*", format!("{}", strings.len()).as_bytes(), b"\r\n", strings.iter().map(|s| serialize_to_bulk_string(s)).collect::<Vec<_>>().concat().as_slice()].concat()
+    [
+        b"*",
+        format!("{}", strings.len()).as_bytes(),
+        b"\r\n",
+        strings
+            .iter()
+            .map(|s| serialize_to_bulk_string(s))
+            .collect::<Vec<_>>()
+            .concat()
+            .as_slice(),
+    ]
+    .concat()
 }
 fn serialize_to_simple_string(s: &[u8]) -> Vec<u8> {
     [b"+", s, b"\r\n"].concat()
@@ -160,15 +162,17 @@ fn serialize_to_bulk_string(s: &[u8]) -> Vec<u8> {
 
 struct Config {
     dir: Option<String>,
-    db_filename: Option<String>
+    db_filename: Option<String>,
 }
 
 impl Config {
     fn new() -> Self {
-        Self {dir: None, db_filename: None}
+        Self {
+            dir: None,
+            db_filename: None,
+        }
     }
 }
-
 
 #[derive(Debug)]
 enum Command {
@@ -176,7 +180,7 @@ enum Command {
     Echo(String),
     Set(String, Vec<u8>, Option<u64>),
     Get(String),
-    ConfigGet(String)
+    ConfigGet(String),
 }
 
 enum DataType {
@@ -379,7 +383,9 @@ impl Command {
                         }
                     }
                     [RedisObject::BulkString(6, config), RedisObject::BulkString(3, s), RedisObject::BulkString(_, key)] => {
-                        if s.to_uppercase() == "GET".to_string() || config.to_uppercase() == "CONFIG" {
+                        if s.to_uppercase() == "GET".to_string()
+                            || config.to_uppercase() == "CONFIG"
+                        {
                             Ok(Command::ConfigGet(key.to_string()))
                         } else {
                             Err(())
