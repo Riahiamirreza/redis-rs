@@ -1,24 +1,47 @@
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
 use std::{
-    collections,
-    sync::{Arc, Mutex},
-    thread, time,
+    collections::{self, HashMap}, io::{Read, Write}, net::{TcpListener, TcpStream}, sync::{Arc, Mutex}, thread, time
 };
+
+use clap::Parser;
+
+#[derive(Parser, Debug)]
+struct Args {
+    #[arg(long)]
+    dir: Option<String>,
+    #[arg(long("dbfilename"))]
+    db_filename: Option<String>
+}
+
+fn init_config(conf: &mut Config) {
+    let args = Args::parse();
+    conf.dir = args.dir;
+    conf.db_filename = args.db_filename;
+}
+
+struct State {
+    config: Mutex<Config>,
+    storage: Mutex<HashMap<String, (Option<time::Instant>, Vec<u8>)>>
+}
 
 fn main() {
     let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
+    let mut config = Config::new();
+    init_config(&mut config);
 
-    let data_storage = Arc::new(Mutex::new(collections::HashMap::<
+    let data_storage = collections::HashMap::<
         String,
         (Option<time::Instant>, Vec<u8>),
-    >::new()));
+    >::new();
+
+    let state = Arc::new(State {
+        config: Mutex::new(config), storage: Mutex::new(data_storage)
+    });
 
     for stream in listener.incoming() {
         match stream {
             Ok(s) => {
-                let cloned_storage = data_storage.clone();
-                thread::spawn(move || handle(s, cloned_storage));
+                let cloned_state = state.clone();
+                thread::spawn(move || handle(s, cloned_state));
             }
             Err(e) => {
                 println!("error: {}", e);
@@ -29,9 +52,9 @@ fn main() {
 
 fn handle(
     mut stream: TcpStream,
-    storage: Arc<Mutex<collections::HashMap<String, (Option<time::Instant>, Vec<u8>)>>>,
+    state: Arc<State>
 ) {
-    let mut buf = [0u8; 64];
+    let mut buf = [0u8; 1024];
     loop {
         let read_count = stream.read(&mut buf).expect("Could not read from client");
         if read_count == 0 {
@@ -50,7 +73,7 @@ fn handle(
                 stream.write_all(out.as_slice());
             }
             Ok(Command::Set(key, value, expiry)) => {
-                let mut storage = storage.lock().unwrap();
+                let mut storage = state.storage.lock().unwrap();
                 let expiry =
                     expiry.map(|t| time::Instant::now() + time::Duration::from_millis(t as u64));
                 storage.insert(key, (expiry, value));
@@ -58,7 +81,7 @@ fn handle(
                 stream.write_all(out.as_slice());
             }
             Ok(Command::Get(key)) => {
-                let mut storage = storage.lock().unwrap();
+                let storage = state.storage.lock().unwrap();
                 match storage.get(&key) {
                     Some((expiry, v)) => {
                         if let Some(expiry) = expiry {
@@ -78,6 +101,28 @@ fn handle(
                     }
                 }
             }
+            Ok(Command::ConfigGet(key)) => {
+                if !["dir", "dbfilename"].contains(&key.as_str()) {
+                    stream.write_all(b"-Error\r\n");
+
+                } else {
+                    let config = state.config.lock().unwrap();
+                    match key.as_str() {
+                       "dir"  => {
+                        let out = serialize_to_bulk_string(config.dir.clone().unwrap_or("".to_string()).as_bytes());
+                        stream.write_all(out.as_slice());
+                       }
+                       "dbfilename" => {
+                        let out = serialize_to_bulk_string(config.db_filename.clone().unwrap_or("".to_string()).as_bytes());
+                        stream.write_all(out.as_slice());
+                       }
+                       _ => {
+                        stream.write_all(b"-Error\r\n");
+                       }
+                    }
+                }
+
+            }
             Err(_) => {
                 stream.write_all(b"-Error\r\n");
             }
@@ -93,12 +138,25 @@ fn serialize_to_bulk_string(s: &[u8]) -> Vec<u8> {
     [b"$", format!("{}", s.len()).as_bytes(), b"\r\n", s, b"\r\n"].concat()
 }
 
+struct Config {
+    dir: Option<String>,
+    db_filename: Option<String>
+}
+
+impl Config {
+    fn new() -> Self {
+        Self {dir: None, db_filename: None}
+    }
+}
+
+
 #[derive(Debug)]
 enum Command {
     Ping,
     Echo(String),
     Set(String, Vec<u8>, Option<u64>),
     Get(String),
+    ConfigGet(String)
 }
 
 enum DataType {
@@ -131,11 +189,11 @@ enum RedisObject {
     Array(Vec<RedisObject>),
 }
 
-struct Parser<'a> {
+struct RESPParser<'a> {
     stream: &'a [u8],
 }
 
-impl<'a> Parser<'a> {
+impl<'a> RESPParser<'a> {
     fn new(stream: &'a [u8]) -> Self {
         Self { stream }
     }
@@ -153,7 +211,7 @@ impl<'a> Parser<'a> {
             return Ok((None, 2));
         }
         match DataType::from_byte(stream[0]) {
-            DataType::Array => Parser::parse_array(&stream[1..]),
+            DataType::Array => RESPParser::parse_array(&stream[1..]),
             DataType::SimpleString => {
                 let parts = split_by_line(&stream[1..]);
                 Ok((
@@ -203,7 +261,7 @@ impl<'a> Parser<'a> {
         let mut objects = vec![];
         let mut pos: usize = parts[0].len() + 2;
         loop {
-            match Parser::parse_object(&stream[pos..]) {
+            match RESPParser::parse_object(&stream[pos..]) {
                 Ok((Some(object), consumed)) => {
                     objects.push(object);
                     pos += consumed;
@@ -222,7 +280,7 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        println!("{objects:?}");
+        // println!("{objects:?}");
         Ok((Some(RedisObject::Array(objects)), pos))
     }
 }
@@ -250,7 +308,7 @@ fn split_by_line(stream: &[u8]) -> Vec<Vec<u8>> {
 
 impl Command {
     fn from_buffer(buf: &[u8]) -> Result<Self, ()> {
-        let mut p = Parser::new(buf);
+        let mut p = RESPParser::new(buf);
         match p.parse() {
             Ok(object) => match object {
                 RedisObject::Array(arr) => match arr.as_slice() {
@@ -296,6 +354,13 @@ impl Command {
                                 value.as_bytes().to_vec(),
                                 None,
                             ))
+                        } else {
+                            Err(())
+                        }
+                    }
+                    [RedisObject::BulkString(6, config), RedisObject::BulkString(3, s), RedisObject::BulkString(_, key)] => {
+                        if s.to_uppercase() == "GET".to_string() || config.to_uppercase() == "CONFIG" {
+                            Ok(Command::ConfigGet(key.to_string()))
                         } else {
                             Err(())
                         }
