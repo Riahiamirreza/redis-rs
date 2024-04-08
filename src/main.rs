@@ -109,12 +109,29 @@ fn handle(
                     let config = state.config.lock().unwrap();
                     match key.as_str() {
                        "dir"  => {
-                        let out = serialize_to_bulk_string(config.dir.clone().unwrap_or("".to_string()).as_bytes());
-                        stream.write_all(out.as_slice());
+                        match config.dir.clone() {
+                            Some(dir) => {
+                                let out = serialize_to_array(&["dir".as_bytes(), dir.as_bytes()]);
+                                // println!("{out:?}");
+                                stream.write_all(out.as_slice());
+                            }
+                            None => {
+                                stream.write_all(b"-Error\r\n");
+                            }
+                        }
                        }
                        "dbfilename" => {
-                        let out = serialize_to_bulk_string(config.db_filename.clone().unwrap_or("".to_string()).as_bytes());
-                        stream.write_all(out.as_slice());
+                        match config.db_filename.clone() {
+                            Some(db_filename) => {
+                                let out = serialize_to_array(&["dbfilename".as_bytes(), db_filename.as_bytes()]);
+                                // let mut p = RESPParser::new(&out);
+                                // println!("{:?}", p.parse());
+                                stream.write_all(out.as_slice());
+                            }
+                            None => {
+
+                            }
+                        }
                        }
                        _ => {
                         stream.write_all(b"-Error\r\n");
@@ -130,6 +147,9 @@ fn handle(
     }
 }
 
+fn serialize_to_array(strings: &[&[u8]]) -> Vec<u8> {
+    [b"*", format!("{}", strings.len()).as_bytes(), b"\r\n", strings.iter().map(|s| serialize_to_bulk_string(s)).collect::<Vec<_>>().concat().as_slice()].concat()
+}
 fn serialize_to_simple_string(s: &[u8]) -> Vec<u8> {
     [b"+", s, b"\r\n"].concat()
 }
